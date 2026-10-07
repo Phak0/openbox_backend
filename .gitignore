@@ -5,6 +5,7 @@ __pycache__/
 .env
 .venv/
 venv/
+openbox_backend/service-account.json
 
 # Django
 media/

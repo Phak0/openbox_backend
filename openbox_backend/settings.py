@@ -26,8 +26,6 @@ SECRET_KEY = 'django-insecure-8ec&s@%dh-z6(*3ppwt#_7r7*zf8q6z_=6_=*1)jd7zzvczdz1
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
-
 
 # Application definition
 
@@ -77,11 +75,14 @@ MIDDLEWARE = [
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    # Add your frontend vercel URL here later once you deploy it
+    "https://openbox-frontend.vercel.app", 
 ]
 
 ALLOWED_HOSTS = [
     "localhost",
     "127.0.0.1",
+    ".vercel.app", # Allows Vercel domains
 ]
 
 ROOT_URLCONF = 'openbox_backend.urls'
@@ -169,3 +170,6 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 BACKEND_BASE_URL = "http://127.0.0.1:8000"
+
+STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
