@@ -7,13 +7,12 @@ from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.auth.transport import requests as google_requests
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
-from rest_framework.permissions import AllowAny
 from django.conf import settings
 from django.core.mail import send_mail
 from decimal import Decimal
 from django.utils import duration, timezone
 from django.db import transaction
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework import status, generics
 from google.oauth2 import id_token
 from rest_framework.response import Response
@@ -21,8 +20,7 @@ from rest_framework.views import APIView
 from rest_framework import generics
 from .firebase_service import (create_task_in_firestore, update_box_status_in_firestore)
 from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import AllowAny
-from .models import (Box, Deposit, Cubby, PrivateCubby, PrivateCubbyApplication, Task, PrintDocument, PendingPrintDocument, ConversationSession, ConversationMessage)
+from .models import (Box, WaitlistEntry, Deposit, Cubby, PrivateCubby, PrivateCubbyApplication, Task, PrintDocument, PendingPrintDocument, ConversationSession, ConversationMessage)
 from .serializers import (
     UserRegistrationSerializer, 
     UserProfileSerializer, 
@@ -48,6 +46,7 @@ from rest_framework import status
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.generics import RetrieveAPIView, ListAPIView
+from rest_framework.decorators import api_view, permission_classes
 
 
 
@@ -112,7 +111,7 @@ class GoogleSignInView(APIView):
             id_info = id_token.verify_oauth2_token(
                 token, 
                 GoogleAuthRequest(), 
-                '305417780927-i45stlg2r7vl3r4ddsimbqip1jn6sa5m.apps.googleusercontent.com' # <-- Put your real Client ID here!
+                '362958356322-mmoc28okm2iq61omf6vt36kl158g9vk7.apps.googleusercontent.com' 
             )
             
             # Google verified! Extract user info
@@ -151,6 +150,45 @@ class GoogleSignInView(APIView):
         except ValueError:
             # Token was invalid
             return Response({'error': 'Invalid Google Token'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def join_waitlist(request):
+    email = request.data.get('email')
+    
+    if not email:
+        return Response({"error": "Email is required"}, status=status.HTTP_400_BAD_REQUEST)
+        
+    if WaitlistEntry.objects.filter(email=email).exists():
+        return Response(
+            {"message": "You're already on the waitlist! We'll be in touch soon."}, 
+            status=status.HTTP_200_OK
+        )
+        
+    WaitlistEntry.objects.create(email=email)
+    
+    subject = "You're on the OpenBox Waitlist!"
+    message = (
+        "Hi there,\n\n"
+        "Thanks for joining the OpenBox waitlist! "
+        "We will notify you as soon as testing is complete and the platform goes live.\n\n"
+        "Best,\n"
+        "The OpenBox Team"
+    )
+    
+    try:
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[email],
+            fail_silently=False,
+        )
+    except Exception as e:
+        print(f"Failed to send waitlist email to {email}: {e}")
+        
+    return Response({"message": "Successfully joined the waitlist!"}, status=status.HTTP_201_CREATED)
         
 
 class UserProfileView(APIView):
@@ -1224,18 +1262,71 @@ class TaskBoxStatusView(APIView):
             "status": task.status,
             "box_status": task.box_status,
         })
-        
 
-class RecentTasksView(APIView):
+
+# 1. View for the 4 Most Recent Dashboard Tasks
+class DashboardRecentTasksView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         now = timezone.now()
+        time_threshold = now - timedelta(hours=48)
 
-        tasks = (
+        # Fetch candidate tasks from the last 48 hours, ordered by newest first
+        recent_tasks = (
             Task.objects
-            .filter(user=request.user)
             .filter(
+                user=request.user,
+                created_at__gte=time_threshold
+            )
+            .select_related('box', 'cubby')
+            .prefetch_related('documents', 'conversation')
+            .order_by('-created_at')
+        )
+
+        # Because of the complex "Maximum of 1 instant_print" rule,
+        # it is much more efficient to evaluate the final 4 in memory.
+        final_tasks = []
+        has_instant_print = False
+
+        for task in recent_tasks:
+            # Stop once we have our 4 tasks
+            if len(final_tasks) >= 4:
+                break
+
+            # Rule 1: Handle instant_print (usually pending, but we'll accept active too). Max 1 allowed.
+            if task.task_type == 'instant_print' and task.status in [Task.Status.PENDING, Task.Status.ACTIVE]:
+                if not has_instant_print:
+                    final_tasks.append(task)
+                    has_instant_print = True
+            
+            # Rule 2: Other tasks MUST be active
+            elif task.status == Task.Status.ACTIVE:
+                final_tasks.append(task)
+
+        serializer = RecentTaskSerializer(final_tasks, many=True)
+        return Response(serializer.data)
+
+
+# 2. View for All Tasks with Status Filtering
+class AllTasksView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # Get the status from query params (e.g., /api/tasks/?status=pending)
+        status_param = request.query_params.get('status')
+        now = timezone.now()
+
+        # Base Query
+        tasks = Task.objects.filter(user=request.user).select_related('box', 'cubby').prefetch_related('documents', 'conversation').order_by('-created_at')
+
+        # Apply specific status filter if provided
+        if status_param:
+            tasks = tasks.filter(status=status_param)
+        
+        # Fallback to your original logic if no specific status is requested
+        else:
+            tasks = tasks.filter(
                 Q(status__in=[
                     Task.Status.PENDING,
                     Task.Status.ACTIVE,
@@ -1248,13 +1339,10 @@ class RecentTasksView(APIView):
                     visible_until__gt=now,
                 )
             )
-            .select_related('box', 'cubby')
-            .order_by('-created_at')
-        )
 
         serializer = RecentTaskSerializer(tasks, many=True)
-
         return Response(serializer.data)
+
 
 
 class TaskHistoryView(ListAPIView):

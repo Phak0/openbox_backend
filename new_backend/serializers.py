@@ -408,6 +408,14 @@ class RecentTaskSerializer(serializers.ModelSerializer):
         allow_null=True,
     )
     cubby_code = serializers.CharField(source='cubby.code', read_only=True, allow_null=True)
+    
+    # 1. Add cubby_id
+    cubby_id = serializers.IntegerField(source='cubby.id', read_only=True, allow_null=True)
+    
+    # 2. Add custom fields for document, conversation, and latest message
+    document_name = serializers.SerializerMethodField()
+    conversation_summary = serializers.SerializerMethodField()
+    latest_message = serializers.SerializerMethodField() # Added
 
     class Meta:
         model = Task
@@ -416,12 +424,55 @@ class RecentTaskSerializer(serializers.ModelSerializer):
             'task_type',
             'status',
             'box_name',
+            'cubby_id',             
             'cubby_code',
             'amount',
             'storage_until',
             'completed_at',
             'created_at',
+            'document_name',        
+            'conversation_summary', 
+            'latest_message',       # Added
         ]
+
+    def get_document_name(self, obj):
+        """Extract the original filename for print tasks"""
+        if obj.task_type in [Task.TaskType.INSTANT_PRINT, Task.TaskType.STORED_PRINT]:
+            # Using the same logic you used in ConversationSerializer
+            document = obj.documents.order_by("created_at").first()
+            if document:
+                return document.original_filename
+        return None
+
+    def get_conversation_summary(self, obj):
+        """Safely fetch basic conversation details if one exists"""
+        conversation = getattr(obj, 'conversation', getattr(obj, 'conversationsession', None))
+        
+        if conversation:
+            return {
+                "id": conversation.id,
+                "current_state": conversation.current_state,
+                "is_active": conversation.is_active,
+            }
+        return None
+
+    def get_latest_message(self, obj):
+        """Fetch the latest message for the task's conversation"""
+        conversation = getattr(obj, 'conversation', getattr(obj, 'conversationsession', None))
+        
+        if not conversation:
+            return None
+            
+        message = (
+            conversation.messages
+            .order_by("-created_at", "-id")
+            .first()
+        )
+
+        if not message:
+            return None
+            
+        return ConversationMessageSerializer(message).data
 
 class TaskHistorySerializer(serializers.ModelSerializer):
     box_name = serializers.CharField(
@@ -478,23 +529,13 @@ class UserProfileSerializer(serializers.ModelSerializer):
         decimal_places=2, 
         read_only=True
     )
-    
-    # 2. Add custom statistics for the frontend dashboard
-    active_tasks_count = serializers.SerializerMethodField()
-    total_tasks_count = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         # NOTE: If your custom User model has other fields (like 'phone_number'), add them here!
-        fields = ['id', 'email', 'name', 'wallet_balance', 'active_tasks_count', 'total_tasks_count']
+        fields = ['id', 'email', 'name', 'wallet_balance']
         
         # Prevent the user from changing their email or ID via a simple API call
         read_only_fields = ['id', 'email', 'wallet_balance'] 
 
-    def get_active_tasks_count(self, obj):
-        """Counts how many items the user currently has in lockers."""
-        return Order.objects.filter(user=obj, status__in=['paid', 'active', 'overstayed']).count()
-    
-    def get_total_tasks_count(self, obj):
-        """Counts every order they've ever made."""
-        return Order.objects.filter(user=obj).count()
+   

@@ -1,6 +1,7 @@
 from django.contrib import admin
 from .models import (
     User,
+    WaitlistEntry,
     Box,
     GlobalPricing,
     Cubby,
@@ -65,6 +66,12 @@ class BoxAdmin(admin.ModelAdmin):
         ),
     )
 
+@admin.register(WaitlistEntry)
+class WaitlistEntryAdmin(admin.ModelAdmin):
+    list_display = ('email', 'created_at')
+    search_fields = ('email',)
+    ordering = ('-created_at',)
+    readonly_fields = ('created_at',)
 
 @admin.register(GlobalPricing)
 class GlobalPricingAdmin(admin.ModelAdmin):

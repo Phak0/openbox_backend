@@ -3,7 +3,7 @@ from django.urls import path
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .views import (RegisterView, VerifyEmailView, UserProfileView, BoxListView, InitializeDepositView, VerifyDepositView, HardwareTestPrintView, GoogleSignInView, CubbyConversationHistoryView, InstantPrintConversationHistoryView, ConversationListView, ConversationDetailView,
-    ConversationActionView, RecentTasksView, TaskHistoryView, TaskHistoryDetailView, TaskBoxStatusView, AddDocumentToStoredPrintView, WalletTransactionHistoryView, hardware_test_ui, StartPrintTaskView, StartStorageTaskView, PackageAccessRedeemView, SimulateBoxStatusView)
+    ConversationActionView, DashboardRecentTasksView, AllTasksView, TaskHistoryView, TaskHistoryDetailView, TaskBoxStatusView, AddDocumentToStoredPrintView, WalletTransactionHistoryView, hardware_test_ui, StartPrintTaskView, StartStorageTaskView, PackageAccessRedeemView, SimulateBoxStatusView)
 
 from .views_private_cubby import CubbyStatusView, ApplyForCubbyView, SetupCubbyView, GenerateTemporaryPinView, RevokeTemporaryPinView, VerifyTemporaryPinView, ShareCubbyView, SharedUsersView, RevokeSharedAccessView, CubbyActivityView
 
@@ -65,8 +65,13 @@ urlpatterns = [
     ),
     path(
         'dashboard/recent-tasks/',
-        RecentTasksView.as_view(),
+        DashboardRecentTasksView.as_view(),
         name='recent-tasks',
+    ),
+    path(
+        'all-tasks/',
+        AllTasksView.as_view(),
+        name='all-tasks',
     ),
     path(
         'dashboard/history/',

@@ -164,7 +164,7 @@ MAILERS = {
     },
 }
 
-PAYSTACK_SECRET_KEY = "sk_test_982100dbc626f5e0befa5beddc5a1564968819c9"
+PAYSTACK_SECRET_KEY = "sk_test_ed4d31f9f6387b49ce3051d6fde8e0cb5061dac8"
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
