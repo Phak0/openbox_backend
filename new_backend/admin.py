@@ -3,6 +3,7 @@ from .models import (
     User,
     WaitlistEntry,
     Box,
+    Station,
     GlobalPricing,
     Cubby,
     Task,
@@ -62,6 +63,37 @@ class BoxAdmin(admin.ModelAdmin):
                     "dropbox_pricing",
                 ),
                 "classes": ("collapse",),
+            },
+        ),
+    )
+
+
+@admin.register(Station)
+class StationAdmin(admin.ModelAdmin):
+    list_display = ("name", "address", "printing_price", "is_available")
+    list_filter = ("is_available",)
+    search_fields = ("name", "address")
+
+    fieldsets = (
+        (
+            "Basic Info",
+            {
+                "fields": (
+                    "name",
+                    "address",
+                    "latitude",
+                    "longitude",
+                    "picture",
+                    "is_available",
+                )
+            },
+        ),
+        (
+            "Pricing Configuration",
+            {
+                "fields": (
+                    "printing_price",
+                ),
             },
         ),
     )

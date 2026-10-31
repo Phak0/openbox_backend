@@ -102,6 +102,8 @@ class ConversationService:
         if task.task_type == Task.TaskType.INSTANT_PRINT:
             documents = task.documents.all().order_by("created_at")
             document = documents.first()
+            # For Specific Station
+            location_text = f" at {task.station.name}" if getattr(task, 'station', None) else ""
 
             if document:
                 message = (
@@ -578,6 +580,12 @@ class ConversationService:
 
             create_task_in_firestore(task)
 
+            location_instruction = (
+                f"Use this code at {task.station.name} when you are ready to start printing."
+                if getattr(task, 'station', None)
+                else "Use this code at any physical box when you are ready to start printing."
+            )
+
             ConversationService._add_system_message(
                 session,
                 {
@@ -585,8 +593,7 @@ class ConversationService:
                     "message": (
                         "Your payment has been received.\n\n"
                         f"Access code: {task.access_code}\n\n"
-                        "Use this code at any physical box "
-                        "when you are ready to start printing."
+                        f"{location_instruction}"
                     ),
                     "access_code": task.access_code,
                 },
@@ -723,7 +730,12 @@ class ConversationService:
         reports a new processing status.
         """
 
-        box_name = task.box.name if task.box else "the box"
+        if getattr(task, 'box', None):
+            box_name = task.box.name
+        elif getattr(task, 'station', None):
+            box_name = task.station.name
+        else:
+            box_name = "the machine"
 
         messages = {
             Task.BoxStatus.QUEUED: {
@@ -799,7 +811,11 @@ class ConversationService:
             "box": {
                 "id": task.box.id,
                 "name": task.box.name,
-            } if task.box else None,
+            } if getattr(task, 'box', None) else None,
+            "station": {
+                "id": task.station.id,
+                "name": task.station.name,
+            } if getattr(task, 'station', None) else None,
         }
 
         session = (

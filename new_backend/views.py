@@ -20,11 +20,13 @@ from rest_framework.views import APIView
 from rest_framework import generics
 from .firebase_service import (create_task_in_firestore, update_box_status_in_firestore)
 from rest_framework.pagination import PageNumberPagination
-from .models import (Box, WaitlistEntry, Deposit, Cubby, PrivateCubby, PrivateCubbyApplication, Task, PrintDocument, PendingPrintDocument, ConversationSession, ConversationMessage)
+from .models import (Box, Station, WaitlistEntry, Deposit, Cubby, PrivateCubby, PrivateCubbyApplication, Task, PrintDocument, PendingPrintDocument, ConversationSession, ConversationMessage)
 from .serializers import (
     UserRegistrationSerializer, 
     UserProfileSerializer, 
     BoxListSerializer,
+    StationSerializer,
+    StationDetailSerializer,
     ConversationSerializer,
     ConversationActionSerializer,
     ConversationSummarySerializer,
@@ -234,6 +236,165 @@ class BoxListView(generics.ListAPIView):
                 pass # If they send bad data, just return the default unsorted list
 
         return queryset
+
+
+# 1. LIST STATIONS (With Haversine distance sorting)
+# -------------------------------------------------
+class StationListView(generics.ListAPIView):
+    """Fetches all available stations, optionally sorting by distance."""
+    serializer_class = StationSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = Station.objects.filter(is_available=True)
+        
+        user_lat = self.request.query_params.get('lat')
+        user_lon = self.request.query_params.get('lon')
+
+        if user_lat and user_lon:
+            try:
+                u_lat = float(user_lat)
+                u_lon = float(user_lon)
+                
+                stations = list(queryset)
+                for station in stations:
+                    station.distance = calculate_haversine(
+                        u_lat, u_lon, float(station.latitude), float(station.longitude)
+                    )
+                
+                stations.sort(key=lambda x: x.distance)
+                return stations
+            except ValueError:
+                pass 
+
+        return queryset
+
+# -------------------------------------------------
+# 2. RETRIEVE STATION DETAILS
+# -------------------------------------------------
+class StationDetailView(generics.RetrieveAPIView):
+    """Fetches specific info for a single station."""
+    queryset = Station.objects.all()
+    serializer_class = StationDetailSerializer
+    permission_classes = [IsAuthenticated]
+
+# -------------------------------------------------
+# 3. CREATE STATION (Any authenticated user)
+# -------------------------------------------------
+class StationCreateView(generics.CreateAPIView):
+    """Creates a new station (Any authenticated user)."""
+    queryset = Station.objects.all()
+    serializer_class = StationSerializer
+    permission_classes = [IsAuthenticated]
+
+# -------------------------------------------------
+# 4. START STATION INSTANT PRINT TASK
+# -------------------------------------------------
+class StartStationPrintTaskView(APIView):
+    """Starts an instant print task specifically tied to a physical Station."""
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        station_id = request.data.get('station_id')
+        copies = request.data.get('copies', 1)
+        uploaded_file = request.FILES.get('file')
+
+        if not station_id:
+            return Response({'error': 'station_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        station = get_object_or_404(Station, id=station_id)
+
+        if not station.is_available:
+            return Response({'error': 'This station is currently unavailable.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not uploaded_file:
+            return Response({'error': 'File is required for printing.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            copies = int(copies)
+            if copies < 1:
+                raise ValueError
+        except (TypeError, ValueError):
+            return Response({'error': 'Copies must be a valid number of at least 1.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # File validation
+        allowed_extensions = {'.pdf', '.png', '.jpg', '.jpeg'}
+        file_name = uploaded_file.name.lower()
+        extension = os.path.splitext(file_name)[1]
+
+        if extension not in allowed_extensions:
+            return Response(
+                {'error': 'Unsupported file type. Allowed formats: PDF, PNG, JPG, JPEG.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if extension == '.pdf':
+            try:
+                reader = PdfReader(uploaded_file)
+                page_count = len(reader.pages)
+            except Exception:
+                return Response({'error': 'The uploaded file is not a valid PDF.'}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            page_count = 1
+
+        uploaded_file.seek(0)
+        total_printed_pages = page_count * copies
+
+        if total_printed_pages > 100:
+            return Response(
+                {
+                    'error': 'A print task cannot exceed 100 printed pages.',
+                    'total_printed_pages': total_printed_pages,
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Calculate cost based strictly on this station's specific price
+        station_price = station.printing_price or Decimal("0.00")
+        amount = Decimal(total_printed_pages) * station_price
+
+        with transaction.atomic():
+            task = Task.objects.create(
+                user=request.user,
+                box=None,
+                cubby=None,
+                station=station, # Link to the new station model
+                task_type=Task.TaskType.INSTANT_PRINT,
+                status=Task.Status.PENDING,
+                box_status=Task.BoxStatus.NOT_SENT,
+                amount=amount,
+                task_data={
+                    "copies": copies,
+                    "print_type": "station_instant",
+                    "page_count": page_count,
+                    "total_printed_pages": total_printed_pages,
+                },
+            )
+
+            PrintDocument.objects.create(
+                task=task,
+                file=uploaded_file,
+                original_filename=uploaded_file.name,
+                page_count=page_count,
+                copies=copies,
+                print_settings={
+                    "print_type": "station_instant",
+                },
+                amount=amount,
+            )
+
+            # Assuming your ConversationService handles task routing automatically
+            conversation = ConversationService.create_session(task)
+
+        return Response(
+            {
+                "task_id": task.id,
+                "conversation_id": conversation.id,
+                "amount": amount,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 #///////////////////////////////////////////////////////////////////
 

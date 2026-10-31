@@ -1,7 +1,7 @@
 # main/new_backend/serializers.py
 from rest_framework import serializers
 import uuid
-from .models import User, Box, ConversationSession, ConversationMessage, Task, WalletTransaction
+from .models import User, Box, Station, ConversationSession, ConversationMessage, Task, WalletTransaction
 from .services.conversation_service import ConversationService
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -67,6 +67,33 @@ class BoxListSerializer(serializers.ModelSerializer):
     def get_distance(self, obj):
         # We will inject 'distance' into the object directly from the view!
         return getattr(obj, 'distance', None)
+
+
+class StationSerializer(serializers.ModelSerializer):
+    distance = serializers.FloatField(read_only=True, required=False)
+
+    class Meta:
+        model = Station
+        fields = [
+            'id', 'name', 'address', 'picture', 'latitude', 
+            'longitude', 'is_available', 'printing_price', 'distance'
+        ]
+
+class StationDetailSerializer(serializers.ModelSerializer):
+    # Optionally include recent tasks tied to this station
+    active_tasks_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Station
+        fields = [
+            'id', 'name', 'address', 'picture', 'latitude', 
+            'longitude', 'is_available', 'printing_price', 
+            'created_at', 'active_tasks_count'
+        ]
+
+    def get_active_tasks_count(self, obj):
+        # Example of fetching related task info
+        return obj.tasks.exclude(status__in=['completed', 'cancelled', 'expired']).count()
 
 #.....................................................        
 
@@ -137,6 +164,11 @@ class ConversationSerializer(serializers.ModelSerializer):
                 "id": task.box.id,
                 "name": task.box.name,
             } if task.box else None,
+
+            "station": {
+                "id": task.station.id,
+                "name": task.station.name,
+            } if getattr(task, 'station', None) else None,
 
             "cubby": {
                 "id": task.cubby.id,
@@ -276,6 +308,11 @@ class ConversationSummarySerializer(serializers.ModelSerializer):
                 "name": task.box.name,
             } if task.box else None,
 
+            "station": {
+                "id": task.station.id,
+                "name": task.station.name,
+            } if getattr(task, 'station', None) else None,
+
             "cubby": {
                 "id": task.cubby.id,
                 "name": task.cubby.code,
@@ -407,6 +444,8 @@ class RecentTaskSerializer(serializers.ModelSerializer):
         read_only=True,
         allow_null=True,
     )
+
+    station_name = serializers.CharField(source='station.name', read_only=True, allow_null=True)
     cubby_code = serializers.CharField(source='cubby.code', read_only=True, allow_null=True)
     
     # 1. Add cubby_id
@@ -424,6 +463,7 @@ class RecentTaskSerializer(serializers.ModelSerializer):
             'task_type',
             'status',
             'box_name',
+            'station_name',
             'cubby_id',             
             'cubby_code',
             'amount',
@@ -480,6 +520,7 @@ class TaskHistorySerializer(serializers.ModelSerializer):
         read_only=True,
         allow_null=True,
     )
+    station_name = serializers.CharField(source='station.name', read_only=True, allow_null=True)
     cubby_code = serializers.CharField(source='cubby.code', read_only=True, allow_null=True)
     cubby_type = serializers.CharField(
         source='cubby.get_cubby_type_display',
@@ -494,6 +535,7 @@ class TaskHistorySerializer(serializers.ModelSerializer):
             'task_type',
             'status',
             'box_name',
+            'station_name',
             'cubby_code',
             'cubby_type',
             'amount',

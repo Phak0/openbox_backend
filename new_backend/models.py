@@ -136,6 +136,30 @@ class Box(models.Model):
         return self.name
 
 
+class Station(models.Model):
+    name = models.CharField(max_length=50)
+    address = models.CharField(max_length=255)
+    picture = models.ImageField(upload_to='station_images/', null=True, blank=True)
+
+    latitude = models.DecimalField(max_digits=9, decimal_places=6)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6)
+
+    is_available = models.BooleanField(default=True)
+
+    # Station-specific pricing (overrides or ignores global instant print price)
+    printing_price = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        help_text="Price per page for instant printing at this specific station."
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.name
+
+
 class GlobalPricing(models.Model):
     """
     Global platform-wide pricing configuration.
@@ -549,6 +573,8 @@ class Task(models.Model):
         blank=True,
         related_name="tasks",
     )
+
+    station = models.ForeignKey(Station, on_delete=models.PROTECT, null=True, blank=True, related_name='tasks',)
     
 
     cubby = models.ForeignKey(

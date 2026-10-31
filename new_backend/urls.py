@@ -2,7 +2,7 @@
 from django.urls import path
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from .views import (RegisterView, VerifyEmailView, UserProfileView, BoxListView, InitializeDepositView, VerifyDepositView, HardwareTestPrintView, GoogleSignInView, CubbyConversationHistoryView, InstantPrintConversationHistoryView, ConversationListView, ConversationDetailView,
+from .views import (RegisterView, VerifyEmailView, UserProfileView, BoxListView, StationListView, StationCreateView, StationDetailView, StartStationPrintTaskView, InitializeDepositView, VerifyDepositView, HardwareTestPrintView, GoogleSignInView, CubbyConversationHistoryView, InstantPrintConversationHistoryView, ConversationListView, ConversationDetailView,
     ConversationActionView, DashboardRecentTasksView, AllTasksView, TaskHistoryView, TaskHistoryDetailView, TaskBoxStatusView, AddDocumentToStoredPrintView, WalletTransactionHistoryView, hardware_test_ui, StartPrintTaskView, StartStorageTaskView, PackageAccessRedeemView, SimulateBoxStatusView)
 
 from .views_private_cubby import CubbyStatusView, ApplyForCubbyView, SetupCubbyView, GenerateTemporaryPinView, RevokeTemporaryPinView, VerifyTemporaryPinView, ShareCubbyView, SharedUsersView, RevokeSharedAccessView, CubbyActivityView
@@ -15,6 +15,10 @@ urlpatterns = [
     path('auth/google/', csrf_exempt(GoogleSignInView.as_view()), name='google-signup'),
     path('profile/', UserProfileView.as_view(), name='user_profile'),
     path('boxes/', BoxListView.as_view(), name='box_list'),
+    path('stations/', StationListView.as_view(), name='station-list'),
+    path('stations/create/', StationCreateView.as_view(), name='station-create'),
+    path('stations/<int:pk>/', StationDetailView.as_view(), name='station-detail'),
+    path('stations/tasks/start-print/', StartStationPrintTaskView.as_view(), name='start-station-print'),
     path('auth/tasks/start/', StartPrintTaskView.as_view(), name='task_start'),
     path(
     "tasks/start-storage/",
