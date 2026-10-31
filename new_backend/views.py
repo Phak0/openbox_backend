@@ -1091,6 +1091,29 @@ class CubbyConversationHistoryView(APIView):
 
         return paginator.get_paginated_response(results)
 
+class StationConversationListView(generics.ListAPIView):
+    """
+    Retrieves a paginated list of conversations for a specific printing station.
+    """
+    serializer_class = ConversationListSerializer
+    permission_classes = [IsAuthenticated] # Or whatever permissions you use
+
+    def get_queryset(self):
+        station_id = self.kwargs.get('station_id')
+        user = self.request.user
+        
+        # Adjust the filter based on how your models are related. 
+        # Example 1: If Conversation has a direct ForeignKey to Station:
+        # queryset = Conversation.objects.filter(station_id=station_id, user=user)
+        
+        # Example 2: If Conversation is linked to a Task, and Task is linked to Station:
+        queryset = Conversation.objects.filter(
+            task__station_id=station_id,
+            user=user
+        ).order_by('-created_at') # Order by newest first
+        
+        return queryset
+
 class InstantPrintConversationHistoryView(APIView):
     permission_classes = [IsAuthenticated]
 

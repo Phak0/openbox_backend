@@ -47,6 +47,11 @@ urlpatterns = [
         name="cubby-conversation-history",
     ),
     path(
+        'stations/<int:station_id>/conversations/', 
+        StationConversationListView.as_view(), 
+        name='station-conversations'
+    ),
+    path(
         "conversations/instant-print/",
         InstantPrintConversationHistoryView.as_view(),
         name="instant-print-conversation-history",
