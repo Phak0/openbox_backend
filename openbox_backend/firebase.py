@@ -15,6 +15,15 @@ FIREBASE_CREDENTIALS_PATH = (
 
 def initialize_firebase():
     if not firebase_admin._apps:
+        if not FIREBASE_CREDENTIALS_PATH.exists():
+            return
+
+        import os
+        import django
+        if not settings.configured:
+            os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'openbox_backend.settings')
+            django.setup()
+
         cred = credentials.Certificate(
             FIREBASE_CREDENTIALS_PATH
         )
