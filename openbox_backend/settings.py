@@ -76,15 +76,32 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://phak0.pythonanywhere.com",
-    # Add your frontend vercel URL here later once you deploy it
-    "https://openbox-frontend.vercel.app", 
+    "https://openbox-frontend.vercel.app",
+    "https://openbox.ng",
+    "http://openbox.ng",
+    "https://www.openbox.ng",
+    "http://www.openbox.ng",
+    "https://api.openbox.ng",
+    "http://api.openbox.ng",
+    "http://196.27.128.96",
 ]
 
 ALLOWED_HOSTS = [
     "localhost",
     "127.0.0.1",
-    'phak0.pythonanywhere.com',  #Change this to the actual host
-    ".vercel.app", # Allows Vercel domains
+    "phak0.pythonanywhere.com",
+    ".vercel.app",
+    "openbox.ng",
+    "www.openbox.ng",
+    "api.openbox.ng",
+    "196.27.128.96",
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://openbox.ng",
+    "https://www.openbox.ng",
+    "https://api.openbox.ng",
+    "http://196.27.128.96",
 ]
 
 ROOT_URLCONF = 'openbox_backend.urls'
