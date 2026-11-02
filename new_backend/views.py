@@ -3,6 +3,10 @@ import requests
 import math
 import uuid
 import os
+import json
+import zipfile
+import secrets
+import hashlib
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.auth.transport import requests as google_requests
 from django.views.decorators.csrf import csrf_exempt
@@ -35,6 +39,7 @@ from .serializers import (
     BoxListSerializer,
     StationSerializer,
     StationDetailSerializer,
+    StationRegistrationSerializer,
     ConversationSerializer,
     ConversationActionSerializer,
     ConversationSummarySerializer,
@@ -52,11 +57,15 @@ from io import BytesIO
 from PIL import Image
 from PyPDF2 import PdfReader
 from django.core.files.base import ContentFile
+from django.http import HttpResponse
+from django.urls import reverse
+from django.contrib.auth.hashers import make_password
 from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.generics import RetrieveAPIView, ListAPIView
 from rest_framework.decorators import api_view, permission_classes
+from .station_authentication import StationAPIKeyAuthentication, IsAuthenticatedStation
 
 
 
@@ -266,7 +275,7 @@ class StationListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        queryset = Station.objects.filter(is_available=True)
+        queryset = Station.objects.filter(is_available=True, is_active=True)
         
         user_lat = self.request.query_params.get('lat')
         user_lon = self.request.query_params.get('lon')
@@ -278,11 +287,13 @@ class StationListView(generics.ListAPIView):
                 
                 stations = list(queryset)
                 for station in stations:
-                    station.distance = calculate_haversine(
-                        u_lat, u_lon, float(station.latitude), float(station.longitude)
-                    )
-                
-                stations.sort(key=lambda x: x.distance)
+                    if station.latitude is None or station.longitude is None:
+                        station.distance = None
+                    else:
+                        station.distance = calculate_haversine(
+                            u_lat, u_lon, float(station.latitude), float(station.longitude)
+                        )
+                stations.sort(key=lambda x: x.distance if x.distance is not None else float('inf'))
                 return stations
             except ValueError:
                 pass 
@@ -302,119 +313,296 @@ class StationDetailView(generics.RetrieveAPIView):
 # 3. CREATE STATION (Any authenticated user)
 # -------------------------------------------------
 class StationCreateView(generics.CreateAPIView):
-    """Creates a new station (Any authenticated user)."""
+    """Register a private printing station and issue its one-time API key."""
     queryset = Station.objects.all()
-    serializer_class = StationSerializer
+    serializer_class = StationRegistrationSerializer
     permission_classes = [IsAuthenticated]
 
-# -------------------------------------------------
-# 4. START STATION INSTANT PRINT TASK
-# -------------------------------------------------
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        station = serializer.save()
+
+        raw_api_key = "stn_" + secrets.token_urlsafe(40)
+        station.api_key_hash = hashlib.sha256(raw_api_key.encode("utf-8")).hexdigest()
+        station.save(update_fields=["api_key_hash", "updated_at"])
+
+        return Response({
+            "message": "Station registered successfully. Store the API key securely; it will not be shown again.",
+            "station": {
+                "id": station.id,
+                "name": station.name,
+                "email": station.email,
+                "is_active": station.is_active,
+                "created_at": station.created_at,
+            },
+            "api_key": raw_api_key,
+            "authentication": "Authorization: Bearer <api_key>",
+        }, status=status.HTTP_201_CREATED)
+
+
 class StartStationPrintTaskView(APIView):
-    """Starts an instant print task specifically tied to a physical Station."""
+    """Create a paid-through-conversation print task for a selected private station."""
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
         station_id = request.data.get('station_id')
-        copies = request.data.get('copies', 1)
         uploaded_file = request.FILES.get('file')
-
         if not station_id:
-            return Response({'error': 'station_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
-            
-        station = get_object_or_404(Station, id=station_id)
-
+            return Response({'error': 'station_id is required.'}, status=400)
+        station = get_object_or_404(Station, id=station_id, is_active=True)
         if not station.is_available:
-            return Response({'error': 'This station is currently unavailable.'}, status=status.HTTP_400_BAD_REQUEST)
-
+            return Response({'error': 'This station is currently unavailable.'}, status=400)
         if not uploaded_file:
-            return Response({'error': 'File is required for printing.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'File is required for printing.'}, status=400)
 
         try:
-            copies = int(copies)
-            if copies < 1:
+            copies = int(request.data.get('copies', 1))
+            if copies < 1 or copies > 100:
                 raise ValueError
         except (TypeError, ValueError):
-            return Response({'error': 'Copies must be a valid number of at least 1.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Copies must be an integer between 1 and 100.'}, status=400)
 
-        # File validation
-        allowed_extensions = {'.pdf', '.png', '.jpg', '.jpeg'}
-        file_name = uploaded_file.name.lower()
-        extension = os.path.splitext(file_name)[1]
+        color_mode = str(request.data.get('color_mode', 'color')).lower()
+        if color_mode not in {'color', 'colour', 'black_and_white', 'grayscale', 'greyscale', 'monochrome'}:
+            return Response({'error': 'Invalid color_mode.'}, status=400)
+        color_mode = 'black_and_white' if color_mode in {'grayscale', 'greyscale', 'monochrome'} else ('color' if color_mode == 'colour' else color_mode)
 
-        if extension not in allowed_extensions:
-            return Response(
-                {'error': 'Unsupported file type. Allowed formats: PDF, PNG, JPG, JPEG.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        duplex_raw = str(request.data.get('duplex', 'false')).lower()
+        if duplex_raw in {'true', '1', 'yes', 'on', 'double-sided', 'double_sided'}:
+            duplex = True
+        elif duplex_raw in {'false', '0', 'no', 'off', 'single-sided', 'single_sided'}:
+            duplex = False
+        else:
+            return Response({'error': 'duplex must be a boolean value.'}, status=400)
+
+        orientation = str(request.data.get('orientation', 'portrait')).lower()
+        if orientation not in {'portrait', 'landscape'}:
+            return Response({'error': 'orientation must be portrait or landscape.'}, status=400)
+
+        extension = os.path.splitext(uploaded_file.name.lower())[1]
+        if extension not in {'.pdf', '.png', '.jpg', '.jpeg'}:
+            return Response({'error': 'Unsupported file type. Allowed formats: PDF, PNG, JPG, JPEG.'}, status=400)
 
         if extension == '.pdf':
             try:
                 reader = PdfReader(uploaded_file)
                 page_count = len(reader.pages)
+                if page_count < 1:
+                    raise ValueError('PDF contains no pages')
             except Exception:
-                return Response({'error': 'The uploaded file is not a valid PDF.'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'error': 'The uploaded file is not a valid PDF.'}, status=400)
         else:
             page_count = 1
-
         uploaded_file.seek(0)
+
         total_printed_pages = page_count * copies
-
         if total_printed_pages > 100:
-            return Response(
-                {
-                    'error': 'A print task cannot exceed 100 printed pages.',
-                    'total_printed_pages': total_printed_pages,
-                },
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({'error': 'A print task cannot exceed 100 printed pages.', 'total_printed_pages': total_printed_pages}, status=400)
 
-        # Calculate cost based strictly on this station's specific price
-        station_price = station.printing_price or Decimal("0.00")
-        amount = Decimal(total_printed_pages) * station_price
+        print_settings = {
+            'color_mode': color_mode,
+            'duplex': duplex,
+            'orientation': orientation,
+        }
+        amount = Decimal(total_printed_pages) * station.printing_price
 
         with transaction.atomic():
             task = Task.objects.create(
                 user=request.user,
                 box=None,
                 cubby=None,
-                station=station, # Link to the new station model
+                station=station,
                 task_type=Task.TaskType.INSTANT_PRINT,
                 status=Task.Status.PENDING,
                 box_status=Task.BoxStatus.NOT_SENT,
                 amount=amount,
                 task_data={
-                    "copies": copies,
-                    "print_type": "station_instant",
-                    "page_count": page_count,
-                    "total_printed_pages": total_printed_pages,
+                    'document_name': uploaded_file.name,
+                    'pages': page_count,
+                    'copies': copies,
+                    **print_settings,
+                    'print_type': 'station_instant',
+                    'total_printed_pages': total_printed_pages,
+                    'station_id': station.id,
                 },
             )
-
             PrintDocument.objects.create(
                 task=task,
                 file=uploaded_file,
                 original_filename=uploaded_file.name,
                 page_count=page_count,
                 copies=copies,
-                print_settings={
-                    "print_type": "station_instant",
-                },
+                print_settings=print_settings,
                 amount=amount,
             )
-
-            # Assuming your ConversationService handles task routing automatically
             conversation = ConversationService.create_session(task)
 
-        return Response(
-            {
-                "task_id": task.id,
-                "conversation_id": conversation.id,
-                "amount": amount,
-            },
-            status=status.HTTP_201_CREATED,
+        return Response({
+            'task_id': task.id,
+            'conversation_id': conversation.id,
+            'station': {'id': station.id, 'name': station.name},
+            'amount': str(amount),
+            'currency': 'NGN',
+            'status': task.status,
+            'message': 'Station print task created. The station can retrieve it after payment is completed.',
+        }, status=status.HTTP_201_CREATED)
+
+
+class StationTaskListView(APIView):
+    """Return paid, non-terminal tasks assigned to the authenticated station."""
+    authentication_classes = [StationAPIKeyAuthentication]
+    permission_classes = [IsAuthenticatedStation]
+
+    def get(self, request):
+        station = request.auth
+        tasks = (Task.objects.filter(
+            station=station,
+            status=Task.Status.ACTIVE,
+            box_status__in=[Task.BoxStatus.QUEUED, Task.BoxStatus.RECEIVED,
+                            Task.BoxStatus.PROCESSING, Task.BoxStatus.PRINTING],
+        ).prefetch_related('documents').order_by('created_at'))
+
+        results = []
+        for task in tasks:
+            documents = []
+            for document in task.documents.all():
+                documents.append({
+                    'id': document.id,
+                    'document_name': document.original_filename or os.path.basename(document.file.name),
+                    'page_count': document.page_count,
+                    'copies': document.copies,
+                    'print_settings': document.print_settings or {},
+                })
+            packet_path = reverse('station-task-packet', kwargs={'task_id': task.id})
+            results.append({
+                'task_id': task.id,
+                'access_code': task.access_code,
+                'document_name': documents[0]['document_name'] if documents else (task.task_data or {}).get('document_name'),
+                'documents': documents,
+                'print_settings': documents[0]['print_settings'] if documents else {},
+                'task_data': task.task_data or {},
+                'task_status': task.status,
+                'station_status': task.box_status,
+                'created_at': task.created_at,
+                'packet_download_url': request.build_absolute_uri(packet_path),
+            })
+        return Response({'station_id': station.id, 'count': len(results), 'tasks': results})
+
+
+class StationTaskPacketDownloadView(APIView):
+    """Build a ZIP containing each original document and task.json."""
+    authentication_classes = [StationAPIKeyAuthentication]
+    permission_classes = [IsAuthenticatedStation]
+
+    def get(self, request, task_id):
+        station = request.auth
+        task = get_object_or_404(
+            Task.objects.prefetch_related('documents'),
+            id=task_id,
+            station=station,
+            status=Task.Status.ACTIVE,
         )
+        buffer = BytesIO()
+        packet_documents = []
+        with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+            for index, document in enumerate(task.documents.all(), start=1):
+                if not document.file:
+                    continue
+                filename = os.path.basename(document.original_filename or document.file.name) or f'document_{index}'
+                # Prevent duplicate ZIP member names.
+                archive_name = f'documents/{index}_{filename}'
+                document.file.open('rb')
+                try:
+                    archive.writestr(archive_name, document.file.read())
+                finally:
+                    document.file.close()
+                packet_documents.append({
+                    'document_name': filename,
+                    'file': archive_name,
+                    'page_count': document.page_count,
+                    'copies': document.copies,
+                    'print_settings': document.print_settings or {},
+                })
+
+            packet = {
+                'task_id': task.id,
+                'access_code': task.access_code,
+                'task_type': task.task_type,
+                'task_status': task.status,
+                'station': {'id': station.id, 'name': station.name},
+                'created_at': task.created_at.isoformat(),
+                'task_data': task.task_data or {},
+                'documents': packet_documents,
+            }
+            archive.writestr('task.json', json.dumps(packet, indent=2, default=str))
+
+        buffer.seek(0)
+        response = HttpResponse(buffer.getvalue(), content_type='application/zip')
+        response['Content-Disposition'] = f'attachment; filename="station_task_{task.id}.zip"'
+        response['Content-Length'] = str(buffer.getbuffer().nbytes)
+        return response
+
+
+class StationTaskStatusUpdateView(APIView):
+    """Accept status reports only from the station that owns the task."""
+    authentication_classes = [StationAPIKeyAuthentication]
+    permission_classes = [IsAuthenticatedStation]
+
+    @transaction.atomic
+    def patch(self, request, task_id):
+        station = request.auth
+        task = get_object_or_404(Task.objects.select_for_update(), id=task_id, station=station)
+        new_status = request.data.get('station_status', request.data.get('box_status'))
+        allowed = {
+            Task.BoxStatus.QUEUED, Task.BoxStatus.RECEIVED,
+            Task.BoxStatus.PROCESSING, Task.BoxStatus.PRINTING,
+            Task.BoxStatus.COMPLETED, Task.BoxStatus.FAILED,
+        }
+        if new_status not in allowed:
+            return Response({'error': 'Invalid station_status.', 'allowed': sorted(allowed)}, status=400)
+        terminal_statuses = {Task.BoxStatus.COMPLETED, Task.BoxStatus.FAILED}
+        if task.box_status in terminal_statuses and new_status != task.box_status:
+            return Response({'error': 'This task is already in a terminal state.'}, status=409)
+
+        progression = [
+            Task.BoxStatus.QUEUED,
+            Task.BoxStatus.RECEIVED,
+            Task.BoxStatus.PROCESSING,
+            Task.BoxStatus.PRINTING,
+            Task.BoxStatus.COMPLETED,
+        ]
+        if new_status != Task.BoxStatus.FAILED and task.box_status in progression:
+            if progression.index(new_status) < progression.index(task.box_status):
+                return Response({'error': 'Station task status cannot move backwards.'}, status=409)
+
+        changed = task.box_status != new_status
+        if changed:
+            task.box_status = new_status
+            update_fields = ['box_status', 'updated_at']
+            if new_status == Task.BoxStatus.COMPLETED:
+                task.status = Task.Status.COMPLETED
+                task.completed_at = timezone.now()
+                update_fields.extend(['status', 'completed_at'])
+            elif new_status == Task.BoxStatus.FAILED:
+                task.status = Task.Status.FAILED
+                update_fields.append('status')
+            task.save(update_fields=update_fields)
+            ConversationService.add_box_status_message(task, new_status)
+
+            if new_status == Task.BoxStatus.COMPLETED:
+                session = ConversationSession.objects.filter(task=task, is_active=True).order_by('-id').first()
+                if session:
+                    ConversationService._complete_conversation(session)
+
+        return Response({
+            'message': 'Station task status updated.' if changed else 'Task already has this status.',
+            'task_id': task.id,
+            'station_status': task.box_status,
+            'task_status': task.status,
+        })
+
 
 #///////////////////////////////////////////////////////////////////
 

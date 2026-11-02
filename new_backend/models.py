@@ -151,27 +151,41 @@ class Box(models.Model):
 
 
 class Station(models.Model):
+    """A privately operated printing business/device registered on OpenBox."""
     name = models.CharField(max_length=50)
-    address = models.CharField(max_length=255)
+    email = models.EmailField(unique=True, null=True,
+    blank=True)
+    # Password is always stored as a Django password hash, never plaintext.
+    password = models.CharField(max_length=128, null=True,
+    blank=True)
+    # Only the hash is persisted. The raw API key is returned once at registration.
+    api_key_hash = models.CharField(max_length=64, unique=True, null=True, blank=True, db_index=True)
+
+    address = models.CharField(max_length=255, blank=True, default='')
     picture = models.ImageField(upload_to='station_images/', null=True, blank=True)
-
-    latitude = models.DecimalField(max_digits=9, decimal_places=6)
-    longitude = models.DecimalField(max_digits=9, decimal_places=6)
-
+    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     is_available = models.BooleanField(default=True)
-
-    # Station-specific pricing (overrides or ignores global instant print price)
+    is_active = models.BooleanField(default=True)
     printing_price = models.DecimalField(
-        max_digits=6,
+        max_digits=8,
         decimal_places=2,
-        help_text="Price per page for instant printing at this specific station."
+        default=Decimal('0.00'),
+        validators=[MinValueValidator(Decimal('0.00'))],
+        help_text="Price per printed page at this station.",
     )
-
+    last_seen_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    def set_password(self, raw_password):
+        self.password = make_password(raw_password)
+
+    def check_password(self, raw_password):
+        return check_password(raw_password, self.password)
+
     def __str__(self):
-        return self.name
+        return f"{self.name} ({self.email})"
 
 
 class GlobalPricing(models.Model):
@@ -558,6 +572,7 @@ class Task(models.Model):
         PENDING = 'pending', 'Pending Payment'
         ACTIVE = 'active', 'Active Storage'
         COMPLETED = 'completed', 'Completed'
+        FAILED = 'failed', 'Failed'
         WITHDRAWN = 'withdrawn', 'Withdrawn'
         EXPIRED = 'expired', 'Expired'
         CANCELLED = 'cancelled', 'Cancelled'

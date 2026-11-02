@@ -46,11 +46,15 @@ class BoxAdmin(admin.ModelAdmin):
             {
                 "fields": (
                     "name",
+                    "email",
                     "address",
                     "latitude",
                     "longitude",
                     "picture",
                     "is_available",
+                    "is_active",
+                    "api_key_hash",
+                    "last_seen_at",
                     "box_type",
                     "api_token",
                 )
@@ -72,9 +76,10 @@ class BoxAdmin(admin.ModelAdmin):
 
 @admin.register(Station)
 class StationAdmin(admin.ModelAdmin):
-    list_display = ("name", "address", "printing_price", "is_available")
+    list_display = ("name", "email", "address", "printing_price", "is_available", "is_active")
     list_filter = ("is_available",)
-    search_fields = ("name", "address")
+    search_fields = ("name", "email", "address")
+    readonly_fields = ("api_key_hash", "last_seen_at")
 
     fieldsets = (
         (
@@ -82,11 +87,15 @@ class StationAdmin(admin.ModelAdmin):
             {
                 "fields": (
                     "name",
+                    "email",
                     "address",
                     "latitude",
                     "longitude",
                     "picture",
                     "is_available",
+                    "is_active",
+                    "api_key_hash",
+                    "last_seen_at",
                 )
             },
         ),

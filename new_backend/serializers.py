@@ -69,6 +69,32 @@ class BoxListSerializer(serializers.ModelSerializer):
         return getattr(obj, 'distance', None)
 
 
+class StationRegistrationSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, min_length=10, trim_whitespace=False)
+
+    class Meta:
+        model = Station
+        fields = ['id', 'name', 'email', 'password', 'address', 'picture',
+                  'latitude', 'longitude', 'printing_price']
+        extra_kwargs = {
+            'address': {'required': False, 'allow_blank': True},
+            'picture': {'required': False},
+            'latitude': {'required': False, 'allow_null': True},
+            'longitude': {'required': False, 'allow_null': True},
+            'printing_price': {'required': False},
+        }
+
+    def validate_email(self, value):
+        return value.strip().lower()
+
+    def create(self, validated_data):
+        raw_password = validated_data.pop('password')
+        station = Station(**validated_data)
+        station.set_password(raw_password)
+        station.save()
+        return station
+
+
 class StationSerializer(serializers.ModelSerializer):
     distance = serializers.FloatField(read_only=True, required=False)
 
@@ -93,7 +119,7 @@ class StationDetailSerializer(serializers.ModelSerializer):
 
     def get_active_tasks_count(self, obj):
         # Example of fetching related task info
-        return obj.tasks.exclude(status__in=['completed', 'cancelled', 'expired']).count()
+        return obj.tasks.exclude(status__in=['completed', 'failed', 'cancelled', 'expired', 'withdrawn']).count()
 
 #.....................................................        
 
