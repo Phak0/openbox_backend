@@ -3,6 +3,7 @@ import random
 import uuid
 from datetime import timedelta
 import string
+import secrets
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.core.validators import MinValueValidator
 from decimal import Decimal
@@ -120,6 +121,13 @@ class Box(models.Model):
         blank=True,
         help_text='{"small": 2.5, "medium": 5.0, "large": 8.0}'
     )
+    
+    api_token = models.CharField(
+        max_length=64, 
+        unique=True, 
+        blank=True, 
+        help_text="The secret token the physical box uses to authenticate."
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -131,6 +139,12 @@ class Box(models.Model):
     @property
     def supports_package_storage(self):
         return self.box_type in ['package', 'combined']
+
+    def save(self, *args, **kwargs):
+        # Auto-generate a secure 32-byte token if one doesn't exist yet
+        if not self.api_token:
+            self.api_token = secrets.token_urlsafe(32)
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name

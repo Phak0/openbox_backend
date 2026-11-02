@@ -33,9 +33,10 @@ class CubbyInline(admin.TabularInline):
 # 3. BOX ADMIN
 @admin.register(Box)
 class BoxAdmin(admin.ModelAdmin):
-    list_display = ("name", "box_type", "address", "is_available")
+    list_display = ("name", "box_type", "address", "is_available", "api_token")
     list_filter = ("box_type", "is_available")
     search_fields = ("name", "address")
+    readonly_fields = ("api_token",)
 
     inlines = [CubbyInline]
 
@@ -51,6 +52,7 @@ class BoxAdmin(admin.ModelAdmin):
                     "picture",
                     "is_available",
                     "box_type",
+                    "api_token",
                 )
             },
         ),

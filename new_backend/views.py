@@ -12,13 +12,21 @@ from django.core.mail import send_mail
 from decimal import Decimal
 from django.utils import duration, timezone
 from django.db import transaction
+from django.db.models import Count
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework import status, generics
 from google.oauth2 import id_token
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import generics
-from .firebase_service import (create_task_in_firestore, update_box_status_in_firestore)
+from permissions import IsAuthenticatedBox
+from .firebase_service import (
+    create_task_in_firestore,
+    update_box_status_in_firestore,
+    update_task_assignment_in_firestore,
+    update_task_status_in_firestore,
+    generate_firebase_custom_token
+)
 from rest_framework.pagination import PageNumberPagination
 from .models import (Box, Station, WaitlistEntry, Deposit, Cubby, PrivateCubby, PrivateCubbyApplication, Task, PrintDocument, PendingPrintDocument, ConversationSession, ConversationMessage)
 from .serializers import (
@@ -32,6 +40,7 @@ from .serializers import (
     ConversationSummarySerializer,
     RecentTaskSerializer,
     TaskHistorySerializer,
+    BoxTaskDownloadSerializer,
     WalletTransactionSerializer
 )
 from .services import ConversationService, WalletService, PricingService
@@ -44,7 +53,6 @@ from PIL import Image
 from PyPDF2 import PdfReader
 from django.core.files.base import ContentFile
 from rest_framework.exceptions import ValidationError
-from rest_framework import status
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.generics import RetrieveAPIView, ListAPIView
@@ -191,7 +199,19 @@ def join_waitlist(request):
         print(f"Failed to send waitlist email to {email}: {e}")
         
     return Response({"message": "Successfully joined the waitlist!"}, status=status.HTTP_201_CREATED)
-        
+
+
+class FirebaseTokenView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        firebase_token = generate_firebase_custom_token(
+            request.user
+        )
+
+        return Response({
+            "firebase_token": firebase_token
+        }, status=status.HTTP_200_OK)       
 
 class UserProfileView(APIView):
     # This single line is the bouncer. It blocks anyone without a valid token!
@@ -1095,7 +1115,7 @@ class StationConversationListView(generics.ListAPIView):
     """
     Retrieves a paginated list of conversations for a specific printing station.
     """
-    serializer_class = ConversationListSerializer
+    serializer_class = ConversationSerializer
     permission_classes = [IsAuthenticated] # Or whatever permissions you use
 
     def get_queryset(self):
@@ -1439,7 +1459,7 @@ class TaskBoxStatusView(APIView):
                     session
                 )
 
-        update_task_status_in_firestore(task)
+        update_box_status_in_firestore(task)
 
         return Response({
             "task_id": task.id,
@@ -1578,6 +1598,193 @@ class WalletTransactionHistoryView(ListAPIView):
             WalletTransaction.objects
             .filter(wallet__user=self.request.user)
             .order_by('-created_at')
+        )
+
+
+class BoxClaimInstantPrintTaskView(APIView):
+    """
+    Allows an authenticated physical box to claim an instant-print
+    task using the access code supplied to the customer after payment.
+    """
+
+    authentication_classes = []
+    permission_classes = [IsAuthenticatedBox]
+
+    def post(self, request):
+        access_code = str(
+            request.data.get("access_code", "")
+        ).strip()
+
+        if not access_code:
+            return Response(
+                {"error": "Access code is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        box = request.box
+
+        # The requesting box must be available and support printing.
+        if not box.is_available:
+            return Response(
+                {"error": "This box is currently unavailable."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not box.supports_printing:
+            return Response(
+                {"error": "This box does not support printing."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+
+            # Lock matching tasks to prevent simultaneous claims.
+            matching_tasks = list(
+                Task.objects
+                .select_for_update()
+                .filter(access_code=access_code)
+                .order_by("id")[:2]
+            )
+
+            if not matching_tasks:
+                return Response(
+                    {"error": "Invalid access code."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            # Access codes are generated from a six-digit range.
+            # Refuse ambiguous codes rather than claiming the wrong task.
+            if len(matching_tasks) > 1:
+                return Response(
+                    {
+                        "error": (
+                            "This access code is associated with "
+                            "multiple tasks. Please contact support."
+                        )
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            task = matching_tasks[0]
+
+            if task.task_type != Task.TaskType.INSTANT_PRINT:
+                return Response(
+                    {"error": "This code is not for an instant-print task."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if task.status != Task.Status.ACTIVE:
+                return Response(
+                    {"error": "This print task is not active."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if task.box_status != Task.BoxStatus.QUEUED:
+                return Response(
+                    {"error": "This print task is not waiting to be claimed."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if task.box_id is not None:
+                return Response(
+                    {
+                        "error": "This task has already been claimed.",
+                        "box": {
+                            "id": task.box.id,
+                            "name": task.box.name,
+                        },
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            # Assign the task to this physical box.
+            task.box = box
+            task.updated_at = timezone.now()
+
+            task.save(
+                update_fields=[
+                    "box",
+                    "updated_at",
+                ]
+            )
+
+            # Add a message to the customer's conversation.
+            session = (
+                ConversationSession.objects
+                .filter(task=task)
+                .first()
+            )
+
+            if session:
+                ConversationService._add_system_message(
+                    session,
+                    {
+                        "title": "Print box assigned",
+                        "message": (
+                            f"Your print request has been assigned to "
+                            f"{box.name}.\n\n"
+                            f"Location: {box.address}\n\n"
+                            "Your document is being prepared for printing."
+                        ),
+                        "box": {
+                            "id": box.id,
+                            "name": box.name,
+                            "address": box.address,
+                        },
+                    },
+                    message_type=ConversationMessage.MessageType.STATUS,
+                )
+
+            # Synchronize Firestore only after Django commits.
+            transaction.on_commit(
+                lambda: update_task_assignment_in_firestore(task)
+            )
+
+        return Response(
+            {
+                "message": "Instant print task successfully assigned.",
+                "task_id": task.id,
+                "box": {
+                    "id": box.id,
+                    "name": box.name,
+                    "address": box.address,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+class BoxTaskDownloadView(APIView):
+    """
+    Endpoint for the physical box to securely download task details and files.
+    """
+    permission_classes = [IsAuthenticatedBox]
+
+    def get(self, request, task_id):
+        try:
+            task = Task.objects.get(id=task_id)
+        except Task.DoesNotExist:
+            return Response(
+                {"error": "Task not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # -------------------------------------------------
+        # Security: Ensure this task belongs to this box
+        # -------------------------------------------------
+        if task.box_id != request.box.id:
+            return Response(
+                {"error": "This task is not assigned to this box."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # -------------------------------------------------
+        # Serialize and return the data packet
+        # -------------------------------------------------
+        serializer = BoxTaskDownloadSerializer(task, context={'request': request})
+        
+        return Response(
+            serializer.data,
+            status=status.HTTP_200_OK
         )
 
 #//////////////////////////////////////////////////////////////////
@@ -1758,7 +1965,10 @@ def calculate_haversine(lat1, lon1, lat2, lon2):
     return R * 2 * math.asin(math.sqrt(a))
 
 
-class SimulateBoxStatusView(APIView):
+
+
+
+class BoxTaskStatusUpdateAPIView(APIView):
     """
     Development/testing endpoint.
 
@@ -1766,11 +1976,17 @@ class SimulateBoxStatusView(APIView):
     of a task and adds the status update to the user's
     conversation.
     """
-
-    permission_classes = [AllowAny]
+    authentication_classes = []
+    # This completely secures the endpoint. 
+    # If the hardware doesn't have the token, Django rejects it with a 403 Forbidden automatically.
+    permission_classes = [IsAuthenticatedBox]
 
     def post(self, request):
-
+        # Optional security upgrade: 
+        # Because we attached the box in permissions.py, you can now verify that 
+        # the box making the request is actually the box assigned to this specific task!
+        # current_box = request.box 
+        
         task_id = request.data.get("task_id")
         box_status = request.data.get("box_status")
 
@@ -1792,6 +2008,14 @@ class SimulateBoxStatusView(APIView):
             return Response(
                 {"error": "Task not found."},
                 status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # ADD THIS SECURITY CHECK:
+        # Ensure the box making the request is the box assigned to the task
+        if task.box_id != request.box.id:
+            return Response(
+                {"error": "This task is not assigned to this box."},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         valid_statuses = [
@@ -1840,6 +2064,14 @@ class SimulateBoxStatusView(APIView):
         # -------------------------------------------------
 
         status_messages = {
+            Task.BoxStatus.NOT_SENT: {
+                "title": "Status pending",
+                "message": (
+                    "The task has been created but has not yet been "
+                    "transmitted to the physical box."
+                ),
+            },
+
             Task.BoxStatus.QUEUED: {
                 "title": "Print request queued",
                 "message": (
@@ -1878,20 +2110,26 @@ class SimulateBoxStatusView(APIView):
                 ),
             },
 
+            Task.BoxStatus.PACKAGE_STORED: {
+                "title": "Package safely stored",
+                "message": (
+                    "Your package has been securely placed inside "
+                    "the box cubby and is ready for pickup."
+                ),
+            },
+
             Task.BoxStatus.COMPLETED: {
                 "title": "Task completed",
                 "message": (
-                    "Your print request has been "
-                    "completed successfully."
+                    "Your request has been completed successfully."
                 ),
             },
 
             Task.BoxStatus.FAILED: {
-                "title": "Printing problem",
+                "title": "Processing problem",
                 "message": (
-                    "The box was unable to complete "
-                    "your print request. Please contact "
-                    "support if you need assistance."
+                    "The box was unable to complete your request. "
+                    "Please contact support if you need assistance."
                 ),
             },
         }

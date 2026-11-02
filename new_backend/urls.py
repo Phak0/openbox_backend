@@ -2,8 +2,8 @@
 from django.urls import path
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from .views import (RegisterView, VerifyEmailView, UserProfileView, BoxListView, StationListView, StationCreateView, StationDetailView, StartStationPrintTaskView, InitializeDepositView, VerifyDepositView, HardwareTestPrintView, GoogleSignInView, CubbyConversationHistoryView, InstantPrintConversationHistoryView, ConversationListView, ConversationDetailView,
-    ConversationActionView, DashboardRecentTasksView, AllTasksView, TaskHistoryView, TaskHistoryDetailView, TaskBoxStatusView, AddDocumentToStoredPrintView, WalletTransactionHistoryView, hardware_test_ui, StartPrintTaskView, StartStorageTaskView, PackageAccessRedeemView, SimulateBoxStatusView)
+from .views import (RegisterView, VerifyEmailView, FirebaseTokenView, UserProfileView, BoxListView, StationListView, StationCreateView, StationDetailView, StartStationPrintTaskView, InitializeDepositView, VerifyDepositView, HardwareTestPrintView, GoogleSignInView, CubbyConversationHistoryView, InstantPrintConversationHistoryView, StationConversationListView, ConversationListView, ConversationDetailView,
+    ConversationActionView, DashboardRecentTasksView, AllTasksView, TaskHistoryView, TaskHistoryDetailView, TaskBoxStatusView, AddDocumentToStoredPrintView, WalletTransactionHistoryView, hardware_test_ui, StartPrintTaskView, StartStorageTaskView, PackageAccessRedeemView, BoxTaskStatusUpdateAPIView, BoxTaskDownloadView, BoxClaimInstantPrintTaskView)
 
 from .views_private_cubby import CubbyStatusView, ApplyForCubbyView, SetupCubbyView, GenerateTemporaryPinView, RevokeTemporaryPinView, VerifyTemporaryPinView, ShareCubbyView, SharedUsersView, RevokeSharedAccessView, CubbyActivityView
 
@@ -13,6 +13,7 @@ urlpatterns = [
     path('auth/login/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('auth/google/', csrf_exempt(GoogleSignInView.as_view()), name='google-signup'),
+    path('auth/firebase-token/', FirebaseTokenView.as_view(), name='firebase_token'),
     path('profile/', UserProfileView.as_view(), name='user_profile'),
     path('boxes/', BoxListView.as_view(), name='box_list'),
     path('stations/', StationListView.as_view(), name='station-list'),
@@ -35,7 +36,9 @@ urlpatterns = [
     path('wallet/deposit/verify/', VerifyDepositView.as_view(), name='deposit_verify'),
     path('user/profile/', UserProfileView.as_view(), name='user_profile'),
 
-    path('test/box-status/', SimulateBoxStatusView.as_view(), name='simulate_box_status'),
+    path('test/box-status/', BoxTaskStatusUpdateAPIView.as_view(), name='box-task-status-update'),
+    path("box/claim-instant-print/", BoxClaimInstantPrintTaskView.as_view(), name="box-claim-instant-print",),
+    path('box/tasks/<int:task_id>/download/', BoxTaskDownloadView.as_view(), name='box-task-download'),
     path("tasks/<int:task_id>/box-status/", TaskBoxStatusView.as_view(), name="task-box-status"),
 
     path("tasks/<int:task_id>/documents/add/", AddDocumentToStoredPrintView.as_view(), name="add-document-to-stored-print"),

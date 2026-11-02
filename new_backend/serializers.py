@@ -1,7 +1,7 @@
 # main/new_backend/serializers.py
 from rest_framework import serializers
 import uuid
-from .models import User, Box, Station, ConversationSession, ConversationMessage, Task, WalletTransaction
+from .models import User, Box, Station, ConversationSession, ConversationMessage, Task, PrintDocument, WalletTransaction
 from .services.conversation_service import ConversationService
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -545,6 +545,37 @@ class TaskHistorySerializer(serializers.ModelSerializer):
             'storage_until',
         ]
 
+
+class BoxPrintDocumentSerializer(serializers.ModelSerializer):
+    file_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PrintDocument
+        fields = ['id', 'file_url', 'original_filename', 'copies', 'page_count', 'print_settings']
+
+    def get_file_url(self, obj):
+        request = self.context.get('request')
+        if obj.file and hasattr(obj.file, 'url'):
+            return request.build_absolute_uri(obj.file.url)
+        return None
+
+class BoxTaskDownloadSerializer(serializers.ModelSerializer):
+    documents = BoxPrintDocumentSerializer(many=True, read_only=True)
+    cubby_code = serializers.CharField(source='cubby.code', read_only=True)
+    storage_expiry = serializers.DateTimeField(source='storage_until', format="%Y-%m-%dT%H:%M:%SZ", read_only=True)
+
+    class Meta:
+        model = Task
+        fields = [
+            'id', 
+            'task_type', 
+            'box_status', 
+            'access_code', 
+            'cubby_code', 
+            'storage_expiry',
+            'task_data', # Contains size, storage_days, etc.
+            'documents'
+        ]
 
 class WalletTransactionSerializer(serializers.ModelSerializer):
     class Meta:
