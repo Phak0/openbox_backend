@@ -70,11 +70,14 @@ class BoxListSerializer(serializers.ModelSerializer):
 
 
 class StationRegistrationSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, min_length=10, trim_whitespace=False)
+    password = serializers.CharField(write_only=True, min_length=6, trim_whitespace=False)
+    name = serializers.CharField(required=True, max_length=50)
+    email = serializers.EmailField(required=True)
+    owner_name = serializers.CharField(required=False, allow_blank=True, default='')
 
     class Meta:
         model = Station
-        fields = ['id', 'name', 'email', 'password', 'address', 'picture',
+        fields = ['id', 'name', 'owner_name', 'email', 'password', 'address', 'picture',
                   'latitude', 'longitude', 'printing_price']
         extra_kwargs = {
             'address': {'required': False, 'allow_blank': True},
@@ -84,8 +87,17 @@ class StationRegistrationSerializer(serializers.ModelSerializer):
             'printing_price': {'required': False},
         }
 
+    def validate_name(self, value):
+        val = value.strip()
+        if Station.objects.filter(name__iexact=val).exists():
+            raise serializers.ValidationError('A station with this name already exists. Please choose a unique station name.')
+        return val
+
     def validate_email(self, value):
-        return value.strip().lower()
+        val = value.strip().lower()
+        if Station.objects.filter(email__iexact=val).exists():
+            raise serializers.ValidationError('A station with this email already exists.')
+        return val
 
     def create(self, validated_data):
         raw_password = validated_data.pop('password')
@@ -101,25 +113,39 @@ class StationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Station
         fields = [
-            'id', 'name', 'address', 'picture', 'latitude', 
-            'longitude', 'is_available', 'printing_price', 'distance'
+            'id', 'name', 'owner_name', 'email', 'address', 'picture', 'latitude', 
+            'longitude', 'is_available', 'is_active', 'printing_price', 'distance'
         ]
 
+
 class StationDetailSerializer(serializers.ModelSerializer):
-    # Optionally include recent tasks tied to this station
     active_tasks_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Station
         fields = [
-            'id', 'name', 'address', 'picture', 'latitude', 
-            'longitude', 'is_available', 'printing_price', 
+            'id', 'name', 'owner_name', 'email', 'address', 'picture', 'latitude', 
+            'longitude', 'is_available', 'is_active', 'printing_price', 
             'created_at', 'active_tasks_count'
         ]
 
     def get_active_tasks_count(self, obj):
-        # Example of fetching related task info
-        return obj.tasks.exclude(status__in=['completed', 'failed', 'cancelled', 'expired', 'withdrawn']).count()
+        return obj.tasks.filter(status=Task.Status.ACTIVE).count()
+
+
+class StationUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Station
+        fields = ['owner_name', 'address', 'picture', 'latitude', 'longitude', 'is_available', 'printing_price']
+        extra_kwargs = {
+            'owner_name': {'required': False, 'allow_blank': True},
+            'address': {'required': False, 'allow_blank': True},
+            'picture': {'required': False},
+            'latitude': {'required': False, 'allow_null': True},
+            'longitude': {'required': False, 'allow_null': True},
+            'is_available': {'required': False},
+            'printing_price': {'required': False},
+        }
 
 #.....................................................        
 
@@ -194,6 +220,7 @@ class ConversationSerializer(serializers.ModelSerializer):
             "station": {
                 "id": task.station.id,
                 "name": task.station.name,
+                "address": getattr(task.station, 'address', '') or '',
             } if getattr(task, 'station', None) else None,
 
             "cubby": {
@@ -337,6 +364,7 @@ class ConversationSummarySerializer(serializers.ModelSerializer):
             "station": {
                 "id": task.station.id,
                 "name": task.station.name,
+                "address": getattr(task.station, 'address', '') or '',
             } if getattr(task, 'station', None) else None,
 
             "cubby": {

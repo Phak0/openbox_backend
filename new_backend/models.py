@@ -18,24 +18,6 @@ from django.contrib.auth.hashers import make_password, check_password
 from django.conf import settings
 
 
-class Migration(migrations.Migration):
-
-    dependencies = [
-        ('new_backend', 'YOUR_PREVIOUS_MIGRATION'),
-    ]
-
-    operations = [
-        migrations.AlterField(
-            model_name='task',
-            name='cubby',
-            field=models.ForeignKey(
-                on_delete=django.db.models.deletion.PROTECT,
-                related_name='tasks',
-                to='new_backend.cubby',
-            ),
-        ),
-    ]
-
 class UserManager(BaseUserManager):
     def create_user(self, email, password=None, **extra_fields):
         if not email: raise ValueError("Email required")
@@ -152,7 +134,8 @@ class Box(models.Model):
 
 class Station(models.Model):
     """A privately operated printing business/device registered on OpenBox."""
-    name = models.CharField(max_length=50)
+    name = models.CharField(max_length=50, unique=True)
+    owner_name = models.CharField(max_length=100, blank=True, default='')
     email = models.EmailField(unique=True, null=True,
     blank=True)
     # Password is always stored as a Django password hash, never plaintext.

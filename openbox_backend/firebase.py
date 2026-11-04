@@ -1,10 +1,12 @@
 from pathlib import Path
+import logging
 
 import firebase_admin
 from firebase_admin import credentials, firestore
 
 from django.conf import settings
 
+logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -16,7 +18,7 @@ FIREBASE_CREDENTIALS_PATH = (
 def initialize_firebase():
     if not firebase_admin._apps:
         if not FIREBASE_CREDENTIALS_PATH.exists():
-            return
+            return None
 
         import os
         import django
@@ -24,21 +26,31 @@ def initialize_firebase():
             os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'openbox_backend.settings')
             django.setup()
 
-        cred = credentials.Certificate(
-            FIREBASE_CREDENTIALS_PATH
-        )
+        try:
+            cred = credentials.Certificate(
+                FIREBASE_CREDENTIALS_PATH
+            )
 
-        options = {}
+            options = {}
 
-        if getattr(settings, "FIREBASE_STORAGE_BUCKET", None):
-            options["storageBucket"] = settings.FIREBASE_STORAGE_BUCKET
+            if getattr(settings, "FIREBASE_STORAGE_BUCKET", None):
+                options["storageBucket"] = settings.FIREBASE_STORAGE_BUCKET
 
-        firebase_admin.initialize_app(
-            cred,
-            options,
-        )
+            return firebase_admin.initialize_app(
+                cred,
+                options,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to initialize Firebase: {e}")
+            return None
 
 
 def get_firestore_client():
     initialize_firebase()
-    return firestore.client()
+    if not firebase_admin._apps:
+        return None
+    try:
+        return firestore.client()
+    except Exception as e:
+        logger.warning(f"Failed to get Firestore client: {e}")
+        return None

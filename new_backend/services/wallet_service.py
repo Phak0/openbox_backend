@@ -88,14 +88,18 @@ class WalletService:
     @staticmethod
     @transaction.atomic
     def refund(user, amount, task=None):
-        wallet = user.wallet
+        wallet = (
+            user.wallet.__class__.objects
+            .select_for_update()
+            .get(pk=user.wallet.pk)
+        )
 
         amount = Decimal(str(amount))
 
         before = wallet.balance
 
         wallet.balance += amount
-        wallet.save()
+        wallet.save(update_fields=['balance'])
 
         WalletTransaction.objects.create(
             wallet=wallet,
@@ -112,4 +116,5 @@ class WalletService:
 
     @staticmethod
     def get_balance(user):
+        user.wallet.refresh_from_db()
         return user.wallet.balance

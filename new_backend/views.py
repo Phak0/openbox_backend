@@ -40,6 +40,7 @@ from .serializers import (
     StationSerializer,
     StationDetailSerializer,
     StationRegistrationSerializer,
+    StationUpdateSerializer,
     ConversationSerializer,
     ConversationActionSerializer,
     ConversationSummarySerializer,
@@ -65,7 +66,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.generics import RetrieveAPIView, ListAPIView
 from rest_framework.decorators import api_view, permission_classes
-from .station_authentication import StationAPIKeyAuthentication, IsAuthenticatedStation
+from .station_authentication import StationAuthentication, StationAPIKeyAuthentication, IsAuthenticatedStation, generate_station_token
 
 
 
@@ -313,10 +314,11 @@ class StationDetailView(generics.RetrieveAPIView):
 # 3. CREATE STATION (Any authenticated user)
 # -------------------------------------------------
 class StationCreateView(generics.CreateAPIView):
-    """Register a private printing station and issue its one-time API key."""
+    """Register a private printing station and issue its one-time API key and web JWT."""
     queryset = Station.objects.all()
     serializer_class = StationRegistrationSerializer
-    permission_classes = [IsAuthenticated]
+    authentication_classes = []
+    permission_classes = [AllowAny]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -327,18 +329,98 @@ class StationCreateView(generics.CreateAPIView):
         station.api_key_hash = hashlib.sha256(raw_api_key.encode("utf-8")).hexdigest()
         station.save(update_fields=["api_key_hash", "updated_at"])
 
+        token = generate_station_token(station)
+
         return Response({
-            "message": "Station registered successfully. Store the API key securely; it will not be shown again.",
-            "station": {
-                "id": station.id,
-                "name": station.name,
-                "email": station.email,
-                "is_active": station.is_active,
-                "created_at": station.created_at,
-            },
+            "message": "Station registered successfully.",
+            "station": StationDetailSerializer(station).data,
+            "token": token,
             "api_key": raw_api_key,
-            "authentication": "Authorization: Bearer <api_key>",
+            "authentication": "Authorization: Bearer <api_key_or_token>",
         }, status=status.HTTP_201_CREATED)
+
+
+class StationLoginView(APIView):
+    """Station owner login via email or unique station name + password."""
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        identifier = str(request.data.get('email', request.data.get('identifier', request.data.get('login', '')))).strip()
+        password = str(request.data.get('password', ''))
+
+        if not identifier or not password:
+            return Response({'error': 'Email/Station Name and Password are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        station = Station.objects.filter(
+            Q(email__iexact=identifier) | Q(name__iexact=identifier)
+        ).first()
+
+        if not station or not station.check_password(password):
+            return Response({'error': 'Invalid credentials. Please verify your email/station name and password.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not station.is_active:
+            return Response({'error': 'This station is currently deactivated.'}, status=status.HTTP_403_FORBIDDEN)
+
+        station.last_seen_at = timezone.now()
+        station.save(update_fields=['last_seen_at'])
+
+        token = generate_station_token(station)
+
+        return Response({
+            'message': 'Login successful.',
+            'token': token,
+            'station': StationDetailSerializer(station).data,
+        }, status=status.HTTP_200_OK)
+
+
+class StationMeView(APIView):
+    """View and update authenticated station profile (address, pricing, availability)."""
+    authentication_classes = [StationAuthentication]
+    permission_classes = [IsAuthenticatedStation]
+
+    def get(self, request):
+        station = request.auth if isinstance(request.auth, Station) else request.user
+        return Response(StationDetailSerializer(station).data)
+
+    def patch(self, request):
+        station = request.auth if isinstance(request.auth, Station) else request.user
+        serializer = StationUpdateSerializer(station, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response({
+            'message': 'Station profile updated successfully.',
+            'station': StationDetailSerializer(station).data
+        })
+
+
+class UserRecentStationsView(APIView):
+    """
+    Returns up to 3 distinct stations that the authenticated user has used in the past.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        station_ids = list(
+            Task.objects
+            .filter(user=request.user, station__isnull=False)
+            .order_by('-created_at')
+            .values_list('station_id', flat=True)
+        )
+        seen = set()
+        recent_ids = []
+        for sid in station_ids:
+            if sid not in seen:
+                seen.add(sid)
+                recent_ids.append(sid)
+                if len(recent_ids) >= 3:
+                    break
+
+        stations = Station.objects.filter(id__in=recent_ids, is_active=True)
+        station_dict = {s.id: s for s in stations}
+        ordered_stations = [station_dict[sid] for sid in recent_ids if sid in station_dict]
+
+        return Response(StationSerializer(ordered_stations, many=True).data)
 
 
 class StartStationPrintTaskView(APIView):
@@ -416,7 +498,7 @@ class StartStationPrintTaskView(APIView):
                 station=station,
                 task_type=Task.TaskType.INSTANT_PRINT,
                 status=Task.Status.PENDING,
-                box_status=Task.BoxStatus.NOT_SENT,
+                box_status=Task.BoxStatus.QUEUED,
                 amount=amount,
                 task_data={
                     'document_name': uploaded_file.name,
@@ -451,41 +533,75 @@ class StartStationPrintTaskView(APIView):
 
 
 class StationTaskListView(APIView):
-    """Return paid, non-terminal tasks assigned to the authenticated station."""
-    authentication_classes = [StationAPIKeyAuthentication]
+    """Return tasks assigned to the authenticated station."""
+    authentication_classes = [StationAuthentication]
     permission_classes = [IsAuthenticatedStation]
 
     def get(self, request):
-        station = request.auth
-        tasks = (Task.objects.filter(
-            station=station,
-            status=Task.Status.ACTIVE,
-            box_status__in=[Task.BoxStatus.QUEUED, Task.BoxStatus.RECEIVED,
-                            Task.BoxStatus.PROCESSING, Task.BoxStatus.PRINTING],
-        ).prefetch_related('documents').order_by('created_at'))
+        station = request.auth if isinstance(request.auth, Station) else request.user
+        filter_status = request.query_params.get('status', 'active').lower()
+
+        queryset = (Task.objects.filter(station=station)
+                    .prefetch_related('documents')
+                    .select_related('user')
+                    .order_by('-created_at'))
+
+        # Station owner only sees tasks after the user completes payment!
+        queryset = queryset.exclude(status=Task.Status.PENDING)
+
+        if filter_status == 'active':
+            queryset = queryset.filter(
+                status=Task.Status.ACTIVE,
+                box_status__in=[
+                    Task.BoxStatus.QUEUED,
+                    Task.BoxStatus.RECEIVED,
+                    Task.BoxStatus.PROCESSING,
+                    Task.BoxStatus.PRINTING,
+                    Task.BoxStatus.NOT_SENT,
+                ]
+            )
+        elif filter_status == 'completed':
+            queryset = queryset.filter(box_status=Task.BoxStatus.COMPLETED)
+        elif filter_status in ['declined', 'failed']:
+            queryset = queryset.filter(box_status=Task.BoxStatus.FAILED)
 
         results = []
-        for task in tasks:
+        for task in queryset:
             documents = []
             for document in task.documents.all():
+                file_url = None
+                if document.file:
+                    try:
+                        file_url = request.build_absolute_uri(document.file.url)
+                    except Exception:
+                        file_url = f"/media/{document.file.name}"
+
                 documents.append({
                     'id': document.id,
                     'document_name': document.original_filename or os.path.basename(document.file.name),
                     'page_count': document.page_count,
                     'copies': document.copies,
                     'print_settings': document.print_settings or {},
+                    'file_url': file_url,
                 })
             packet_path = reverse('station-task-packet', kwargs={'task_id': task.id})
+            primary_doc = documents[0] if documents else {}
             results.append({
+                'id': task.id,
                 'task_id': task.id,
                 'access_code': task.access_code,
-                'document_name': documents[0]['document_name'] if documents else (task.task_data or {}).get('document_name'),
+                'user_name': task.user.name if task.user else 'Customer',
+                'user_email': task.user.email if task.user else '',
+                'document_name': primary_doc.get('document_name') or (task.task_data or {}).get('document_name', 'Document'),
+                'file_url': primary_doc.get('file_url'),
                 'documents': documents,
-                'print_settings': documents[0]['print_settings'] if documents else {},
+                'print_settings': primary_doc.get('print_settings') or {},
                 'task_data': task.task_data or {},
                 'task_status': task.status,
                 'station_status': task.box_status,
+                'amount': str(task.amount),
                 'created_at': task.created_at,
+                'completed_at': task.completed_at,
                 'packet_download_url': request.build_absolute_uri(packet_path),
             })
         return Response({'station_id': station.id, 'count': len(results), 'tasks': results})
@@ -493,16 +609,15 @@ class StationTaskListView(APIView):
 
 class StationTaskPacketDownloadView(APIView):
     """Build a ZIP containing each original document and task.json."""
-    authentication_classes = [StationAPIKeyAuthentication]
+    authentication_classes = [StationAuthentication]
     permission_classes = [IsAuthenticatedStation]
 
     def get(self, request, task_id):
-        station = request.auth
+        station = request.auth if isinstance(request.auth, Station) else request.user
         task = get_object_or_404(
             Task.objects.prefetch_related('documents'),
             id=task_id,
             station=station,
-            status=Task.Status.ACTIVE,
         )
         buffer = BytesIO()
         packet_documents = []
@@ -511,7 +626,6 @@ class StationTaskPacketDownloadView(APIView):
                 if not document.file:
                     continue
                 filename = os.path.basename(document.original_filename or document.file.name) or f'document_{index}'
-                # Prevent duplicate ZIP member names.
                 archive_name = f'documents/{index}_{filename}'
                 document.file.open('rb')
                 try:
@@ -546,63 +660,132 @@ class StationTaskPacketDownloadView(APIView):
 
 
 class StationTaskStatusUpdateView(APIView):
-    """Accept status reports only from the station that owns the task."""
-    authentication_classes = [StationAPIKeyAuthentication]
+    """Accept accept/decline/complete/status reports from the station that owns the task."""
+    authentication_classes = [StationAuthentication]
     permission_classes = [IsAuthenticatedStation]
 
     @transaction.atomic
     def patch(self, request, task_id):
-        station = request.auth
+        station = request.auth if isinstance(request.auth, Station) else request.user
         task = get_object_or_404(Task.objects.select_for_update(), id=task_id, station=station)
+        
+        action = request.data.get('action') # 'accept', 'decline', 'complete'
         new_status = request.data.get('station_status', request.data.get('box_status'))
+
+        if action == 'accept':
+            new_status = Task.BoxStatus.RECEIVED
+        elif action == 'decline':
+            new_status = Task.BoxStatus.FAILED
+        elif action == 'complete':
+            new_status = Task.BoxStatus.COMPLETED
+
         allowed = {
             Task.BoxStatus.QUEUED, Task.BoxStatus.RECEIVED,
             Task.BoxStatus.PROCESSING, Task.BoxStatus.PRINTING,
             Task.BoxStatus.COMPLETED, Task.BoxStatus.FAILED,
         }
         if new_status not in allowed:
-            return Response({'error': 'Invalid station_status.', 'allowed': sorted(allowed)}, status=400)
+            return Response({'error': 'Invalid station_status or action.', 'allowed': sorted(allowed)}, status=400)
+
         terminal_statuses = {Task.BoxStatus.COMPLETED, Task.BoxStatus.FAILED}
         if task.box_status in terminal_statuses and new_status != task.box_status:
             return Response({'error': 'This task is already in a terminal state.'}, status=409)
-
-        progression = [
-            Task.BoxStatus.QUEUED,
-            Task.BoxStatus.RECEIVED,
-            Task.BoxStatus.PROCESSING,
-            Task.BoxStatus.PRINTING,
-            Task.BoxStatus.COMPLETED,
-        ]
-        if new_status != Task.BoxStatus.FAILED and task.box_status in progression:
-            if progression.index(new_status) < progression.index(task.box_status):
-                return Response({'error': 'Station task status cannot move backwards.'}, status=409)
 
         changed = task.box_status != new_status
         if changed:
             task.box_status = new_status
             update_fields = ['box_status', 'updated_at']
+
+            session = ConversationSession.objects.filter(task=task).order_by('-id').first()
+
             if new_status == Task.BoxStatus.COMPLETED:
                 task.status = Task.Status.COMPLETED
                 task.completed_at = timezone.now()
                 update_fields.extend(['status', 'completed_at'])
-            elif new_status == Task.BoxStatus.FAILED:
-                task.status = Task.Status.FAILED
-                update_fields.append('status')
-            task.save(update_fields=update_fields)
-            ConversationService.add_box_status_message(task, new_status)
-
-            if new_status == Task.BoxStatus.COMPLETED:
-                session = ConversationSession.objects.filter(task=task, is_active=True).order_by('-id').first()
                 if session:
+                    ConversationService._add_system_message(
+                        session,
+                        {
+                            "title": "Printing Completed",
+                            "message": f"Your document has been printed and is ready for pickup at {station.name}!",
+                            "station_name": station.name,
+                            "address": station.address,
+                        },
+                        message_type=ConversationMessage.MessageType.STATUS
+                    )
                     ConversationService._complete_conversation(session)
 
+            elif new_status == Task.BoxStatus.FAILED: # Declined or failed
+                task.status = Task.Status.FAILED
+                update_fields.append('status')
+                # Refund user wallet if charged
+                if task.amount > 0 and task.user:
+                    try:
+                        WalletService.refund(
+                            user=task.user,
+                            amount=task.amount,
+                            task=task,
+                        )
+                    except Exception as e:
+                        logger.exception(f"Refund failed for task {task.id}: {e}")
+                if session:
+                    ConversationService._add_system_message(
+                        session,
+                        {
+                            "title": "Print Order Declined",
+                            "message": f"The shop owner at {station.name} declined this print order. If charged, ₦{task.amount} has been refunded to your wallet.",
+                            "declined": True,
+                        },
+                        message_type=ConversationMessage.MessageType.STATUS
+                    )
+                    ConversationService._complete_conversation(session)
+
+            elif new_status == Task.BoxStatus.RECEIVED: # Accepted
+                if task.status == Task.Status.PENDING:
+                    task.status = Task.Status.ACTIVE
+                    update_fields.append('status')
+                if session:
+                    ConversationService._add_system_message(
+                        session,
+                        {
+                            "title": "Order Accepted",
+                            "message": f"The shop owner at {station.name} accepted your document and is preparing the print job.",
+                            "accepted": True,
+                        },
+                        message_type=ConversationMessage.MessageType.STATUS
+                    )
+
+            elif new_status == Task.BoxStatus.PRINTING: # Printing in progress on physical printer
+                if task.status == Task.Status.PENDING:
+                    task.status = Task.Status.ACTIVE
+                    update_fields.append('status')
+                if session:
+                    ConversationService._add_system_message(
+                        session,
+                        {
+                            "title": "Printing Started",
+                            "message": f"Your document is being printed on the physical printer at {station.name}.",
+                            "printing": True,
+                        },
+                        message_type=ConversationMessage.MessageType.STATUS
+                    )
+
+            task.save(update_fields=update_fields)
+            if not session:
+                ConversationService.add_box_status_message(task, new_status)
+            try:
+                from .firebase_service import update_box_status_in_firestore, update_task_in_firestore
+                update_box_status_in_firestore(task)
+                update_task_in_firestore(task)
+            except Exception:
+                pass
+
         return Response({
-            'message': 'Station task status updated.' if changed else 'Task already has this status.',
+            'message': f'Task status updated to {task.box_status}.',
             'task_id': task.id,
             'station_status': task.box_status,
             'task_status': task.status,
         })
-
 
 #///////////////////////////////////////////////////////////////////
 

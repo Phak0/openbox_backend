@@ -2,7 +2,7 @@
 from django.urls import path
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from .views import (RegisterView, VerifyEmailView, FirebaseTokenView, UserProfileView, BoxListView, StationListView, StationCreateView, StationDetailView, StartStationPrintTaskView, StationTaskListView, StationTaskPacketDownloadView, StationTaskStatusUpdateView, InitializeDepositView, VerifyDepositView, HardwareTestPrintView, GoogleSignInView, CubbyConversationHistoryView, InstantPrintConversationHistoryView, StationConversationListView, ConversationListView, ConversationDetailView,
+from .views import (RegisterView, VerifyEmailView, FirebaseTokenView, UserProfileView, BoxListView, StationListView, StationCreateView, StationDetailView, StationLoginView, StationMeView, StartStationPrintTaskView, UserRecentStationsView, StationTaskListView, StationTaskPacketDownloadView, StationTaskStatusUpdateView, InitializeDepositView, VerifyDepositView, HardwareTestPrintView, GoogleSignInView, CubbyConversationHistoryView, InstantPrintConversationHistoryView, StationConversationListView, ConversationListView, ConversationDetailView,
     ConversationActionView, DashboardRecentTasksView, AllTasksView, TaskHistoryView, TaskHistoryDetailView, TaskBoxStatusView, AddDocumentToStoredPrintView, WalletTransactionHistoryView, hardware_test_ui, StartPrintTaskView, StartStorageTaskView, PackageAccessRedeemView, BoxTaskStatusUpdateAPIView, BoxTaskDownloadView, BoxClaimInstantPrintTaskView)
 
 from .views_private_cubby import CubbyStatusView, ApplyForCubbyView, SetupCubbyView, GenerateTemporaryPinView, RevokeTemporaryPinView, VerifyTemporaryPinView, ShareCubbyView, SharedUsersView, RevokeSharedAccessView, CubbyActivityView
@@ -21,8 +21,13 @@ urlpatterns = [
     #//------STATION RELATED ENDPOINTS------
     path('stations/', StationListView.as_view(), name='station-list'),
     path('stations/create/', StationCreateView.as_view(), name='station-create'),
+    path('stations/login/', StationLoginView.as_view(), name='station-login'),
+    path('stations/me/', StationMeView.as_view(), name='station-me'),
+    path('station/me/', StationMeView.as_view(), name='station-me-alias'),
     path('stations/<int:pk>/', StationDetailView.as_view(), name='station-detail'),
     path('stations/tasks/start-print/', StartStationPrintTaskView.as_view(), name='start-station-print'),
+    path('stations/recent/', UserRecentStationsView.as_view(), name='user-recent-stations'),
+    path('station/recent/', UserRecentStationsView.as_view(), name='user-recent-stations-alias'),
     path('station/tasks/', StationTaskListView.as_view(), name='station-task-list'),
     path('station/tasks/<int:task_id>/packet/', StationTaskPacketDownloadView.as_view(), name='station-task-packet'),
     path('station/tasks/<int:task_id>/status/', StationTaskStatusUpdateView.as_view(), name='station-task-status-update'),

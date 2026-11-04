@@ -1,12 +1,25 @@
+import logging
+import firebase_admin
 from firebase_admin import firestore, auth
 
-from openbox_backend.firebase import get_firestore_client
+from openbox_backend.firebase import get_firestore_client, initialize_firebase
+
+logger = logging.getLogger(__name__)
+
 
 def generate_firebase_custom_token(user):
     """
     Generate a Firebase custom token for an authenticated Django user.
     """
-    return auth.create_custom_token(str(user.id)).decode("utf-8")
+    initialize_firebase()
+    if not firebase_admin._apps:
+        return ""
+    try:
+        return auth.create_custom_token(str(user.id)).decode("utf-8")
+    except Exception as e:
+        logger.warning(f"Could not generate Firebase custom token: {e}")
+        return ""
+
 
 def _serialize_document(document):
     return {
@@ -43,6 +56,7 @@ def _serialize_cubby(task):
         "type": task.cubby.cubby_type,
         "status": task.cubby.status,
     }
+
 
 def _serialize_conversation(task):
     if not hasattr(task, 'conversation'):
@@ -118,60 +132,65 @@ def create_task_in_firestore(task):
     Create the complete task packet that the physical box
     uses to execute the task.
     """
-
     db = get_firestore_client()
+    if not db:
+        return
 
-    task_ref = (
-        db.collection("tasks")
-        .document(str(task.id))
-    )
-
-    task_ref.set(_build_task_payload(task))
+    try:
+        task_ref = (
+            db.collection("tasks")
+            .document(str(task.id))
+        )
+        task_ref.set(_build_task_payload(task))
+    except Exception as e:
+        logger.warning(f"Failed to create task in Firestore: {e}")
 
 
 def update_task_in_firestore(task):
     """
     Synchronize the task packet in Firestore.
-
-    Used when task information other than just box_status
-    changes, such as box assignment, cubby assignment,
-    access code, storage expiry, etc.
     """
-
     db = get_firestore_client()
+    if not db:
+        return
 
-    task_ref = (
-        db.collection("tasks")
-        .document(str(task.id))
-    )
-
-    task_ref.set(
-        _build_task_payload(task),
-        merge=True,
-    )
+    try:
+        task_ref = (
+            db.collection("tasks")
+            .document(str(task.id))
+        )
+        task_ref.set(
+            _build_task_payload(task),
+            merge=True,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to update task in Firestore: {e}")
 
 
 def update_task_status_in_firestore(task):
     """
     Update the task lifecycle/status information in Firestore.
     """
-
     db = get_firestore_client()
+    if not db:
+        return
 
-    task_ref = (
-        db.collection("tasks")
-        .document(str(task.id))
-    )
-
-    task_ref.set(
-        {
-            "status": task.status,
-            "box_status": task.box_status,
-            "completed_at": task.completed_at,
-            "updated_at": firestore.SERVER_TIMESTAMP,
-        },
-        merge=True,
-    )
+    try:
+        task_ref = (
+            db.collection("tasks")
+            .document(str(task.id))
+        )
+        task_ref.set(
+            {
+                "status": task.status,
+                "box_status": task.box_status,
+                "completed_at": task.completed_at,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            },
+            merge=True,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to update task status in Firestore: {e}")
 
 
 def update_box_status_in_firestore(task):
@@ -179,42 +198,47 @@ def update_box_status_in_firestore(task):
     Update the physical box status AND the conversation messages in Firestore.
     """
     db = get_firestore_client()
-    task_ref = db.collection("tasks").document(str(task.id))
+    if not db:
+        return
 
-    task_ref.set(
-        {
-            "box_status": task.box_status,
-            "updated_at": firestore.SERVER_TIMESTAMP,
-            "conversation": _serialize_conversation(task), # This pushes the new chat bubbles to React
-        },
-        merge=True,
-    )
+    try:
+        task_ref = db.collection("tasks").document(str(task.id))
+        task_ref.set(
+            {
+                "box_status": task.box_status,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+                "conversation": _serialize_conversation(task),
+            },
+            merge=True,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to update box status in Firestore: {e}")
 
 
 def update_task_assignment_in_firestore(task):
     """
     Update Firestore after a task is assigned to a physical
     box and/or cubby.
-
-    Also synchronizes conversation messages so the frontend
-    receives assignment notifications in real time.
     """
-
     db = get_firestore_client()
+    if not db:
+        return
 
-    task_ref = (
-        db.collection("tasks")
-        .document(str(task.id))
-    )
-
-    task_ref.set(
-        {
-            "box_id": task.box_id,
-            "box": _serialize_box(task),
-            "cubby_id": task.cubby_id,
-            "cubby": _serialize_cubby(task),
-            "conversation": _serialize_conversation(task),
-            "updated_at": firestore.SERVER_TIMESTAMP,
-        },
-        merge=True,
-    )
+    try:
+        task_ref = (
+            db.collection("tasks")
+            .document(str(task.id))
+        )
+        task_ref.set(
+            {
+                "box_id": task.box_id,
+                "box": _serialize_box(task),
+                "cubby_id": task.cubby_id,
+                "cubby": _serialize_cubby(task),
+                "conversation": _serialize_conversation(task),
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            },
+            merge=True,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to update task assignment in Firestore: {e}")

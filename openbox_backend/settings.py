@@ -89,6 +89,7 @@ CORS_ALLOWED_ORIGINS = [
 ALLOWED_HOSTS = [
     "localhost",
     "127.0.0.1",
+    "testserver",
     "phak0.pythonanywhere.com",
     ".vercel.app",
     "openbox.ng",

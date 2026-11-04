@@ -54,6 +54,45 @@ class ConversationService:
             message_type=ConversationMessage.MessageType.SUMMARY,
         )
 
+        # Immediate Payment / Fund Wallet prompt balloon
+        balance = WalletService.get_balance(task.user) if task.user else Decimal("0.00")
+        if balance >= task.amount:
+            destination_name = task.station.name if getattr(task, 'station', None) else "the OpenBox network"
+            ConversationService._add_system_message(
+                session,
+                {
+                    "title": "Payment Ready • Pay Now",
+                    "message": (
+                        f"Amount due: ₦{task.amount:.2f}\n"
+                        f"Your wallet balance: ₦{balance:.2f}\n\n"
+                        f"You have sufficient balance. Click 'Pay Now' below to authorize payment and dispatch your print job to {destination_name}."
+                    ),
+                    "total_amount": f"{task.amount:.2f}",
+                    "wallet_balance": f"{balance:.2f}",
+                    "can_pay": True,
+                },
+                message_type=ConversationMessage.MessageType.PAYMENT,
+            )
+        else:
+            shortfall = task.amount - balance
+            ConversationService._add_system_message(
+                session,
+                {
+                    "title": "Insufficient Balance • Fund Wallet",
+                    "message": (
+                        f"Amount due: ₦{task.amount:.2f}\n"
+                        f"Your wallet balance: ₦{balance:.2f}\n"
+                        f"Shortfall: ₦{shortfall:.2f}\n\n"
+                        "Your wallet balance is insufficient to complete this payment. Please fund your wallet to proceed."
+                    ),
+                    "total_amount": f"{task.amount:.2f}",
+                    "wallet_balance": f"{balance:.2f}",
+                    "required_topup": f"{shortfall:.2f}",
+                    "can_pay": False,
+                },
+                message_type=ConversationMessage.MessageType.PAYMENT,
+            )
+
         return session
 
 
@@ -350,6 +389,8 @@ class ConversationService:
                 "label": (
                     "Top Up Wallet"
                     if action == "topup"
+                    else "Pay Now"
+                    if action == "pay"
                     else action.replace("_", " ").title()
                 ),
             }
